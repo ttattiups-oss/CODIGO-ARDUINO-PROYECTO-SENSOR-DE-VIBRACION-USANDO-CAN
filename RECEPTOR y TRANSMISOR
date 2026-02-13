@@ -1,0 +1,112 @@
+• RECEPTOR
+#include <SPI.h>
+#include <mcp_can.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+// ---------- OLED ----------
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+#define ANCHO_BARRA 120
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, 
+OLED_RESET);
+// ---------- CAN ----------
+#define CAN_CS 10
+#define CAN_INT 2
+MCP_CAN CAN(CAN_CS);
+// ---------- Variables CAN ----------
+long unsigned int rxId;
+byte len = 0;
+byte rxBuf[8];
+// ---------- Variables de filtrado ----------
+float barraSuave = 0;
+float valorFiltrado = 0;
+void setup() {
+Serial.begin(9600);
+// OLED
+if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+while (true);
+}
+display.clearDisplay();
+display.setTextColor(SSD1306_WHITE);
+// CAN
+while (CAN.begin(MCP_ANY, CAN_500KBPS, MCP_8MHZ) != CAN_OK) {
+delay(500);
+}
+CAN.setMode(MCP_NORMAL);
+pinMode(CAN_INT, INPUT);
+}
+void loop() {
+if (!digitalRead(CAN_INT)) {
+CAN.readMsgBuf(&rxId, &len, rxBuf);
+// ---------- DATO RECIBIDO ----------
+int valorRaw = rxBuf[0]; // 0–100 %
+// ---------- FILTRO (NUMERO + BARRA BAJAN JUNTOS) ----------
+valorFiltrado = valorFiltrado * 0.85 + valorRaw * 0.15;
+int valor = (int)valorFiltrado;
+// ---------- ESCALADO DE BARRA ----------
+int barra = map(valor, 0, 100, 0, ANCHO_BARRA);
+// ---------- SUAVIZADO VISUAL ----------
+barraSuave = barraSuave * 0.85 + barra * 0.15;
+// ---------- OLED ----------
+display.clearDisplay();
+// TITULO
+display.setTextSize(1);
+display.setCursor(0, 0);
+display.print("VIBRACION");
+// NUMERO GRANDE CON %
+display.setTextSize(2);
+display.setCursor(0, 10);
+display.print(valor);
+display.print("%");
+// BARRA GRAFICA
+display.drawRect(4, 40, ANCHO_BARRA, 10, SSD1306_WHITE);
+display.fillRect(4, 40, barraSuave, 10, SSD1306_WHITE);
+// ALERTA
+if (valor > 40) {
+display.setTextSize(1);
+display.setCursor(80, 12);
+display.print("ALTA");
+}
+display.display();
+}
+}
+• TRANSMISOR
+#include <SPI.h>
+#include <mcp_can.h>
+#define CAN_CS 10
+#define SENSOR_D0 2
+MCP_CAN CAN(CAN_CS);
+volatile int golpes = 0;
+unsigned long tiempoAnterior = 0;
+// Interrupción del sensor
+void detectarGolpe() {
+golpes++;
+}
+void setup() {
+Serial.begin(9600);
+pinMode(SENSOR_D0, INPUT);
+attachInterrupt(digitalPinToInterrupt(SENSOR_D0),
+detectarGolpe, RISING);
+// Iniciar CAN
+while (CAN.begin(MCP_ANY, CAN_500KBPS, MCP_8MHZ) != CAN_OK) {
+delay(500);
+}
+CAN.setMode(MCP_NORMAL);
+}
+void loop() {
+// Ventana de tiempo (200 ms)
+if (millis() - tiempoAnterior >= 200) {
+tiempoAnterior = millis();
+// Convertir golpes a porcentaje
+int vibracion = map(golpes, 0, 15, 0, 100);
+vibracion = constrain(vibracion, 0, 100);
+// Enviar por CAN
+byte data[1];
+data[0] = vibracion;
+CAN.sendMsgBuf(0x100, 0, 1, data);
+// Reiniciar contador
+golpes = 0;
+}
+}
